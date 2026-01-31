@@ -18,10 +18,30 @@ import {
   getPlaylistsFromLibrary
 } from "./youtube.ts";
 
+import { mkdir } from "node:fs/promises";
+import { dirname } from "node:path";
+
+async function getFromCache<T>(
+    file: string,
+    ttlMs: number,
+    fetcher: () => Promise<T>
+): Promise<T> {
+    try {
+        const f = Bun.file(file);
+        const { v, e } = await f.json();
+        if (e > Date.now()) return v as T;
+    } catch {}
+
+    const v = await fetcher();
+    await mkdir(dirname(file), { recursive: true });
+    await Bun.write(file, JSON.stringify({ v, e: Date.now() + ttlMs }));
+    return v;
+}
+
 async function initSession() {
   debugLog("Demarrage");
   console.log("Lecture des cookies Brave...");
-  const cookie = await getBraveCookies();
+  const cookie = await getFromCache('storage/cookies.json', 3600 * 1000, getBraveCookies);
   if (!cookie) {
     throw new Error("Cookies vides.");
   }
@@ -161,8 +181,8 @@ export async function main() {
   const yt = await initSession();
   const accounts = await listAccounts(yt);
   await selectAccount(yt, accounts);
-  const playlists = await fetchPlaylists(yt);
-  printPlaylists(playlists);
+  // const playlists = await fetchPlaylists(yt);
+  // printPlaylists(playlists);
 
   // yt.playlist.create("My Playlist", ["QnjJMJhW-gw", "sdWPiBrsCVo"]);
 

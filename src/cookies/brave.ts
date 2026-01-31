@@ -102,7 +102,10 @@ function resolveBraveProfileOrPath(profile: string): string {
   }
 
   if (candidates.length > 0) {
-    return candidates[0];
+    const first = candidates[0];
+    if (first) {
+      return first;
+    }
   }
 
   throw new Error("Plateforme non supportee. Definis BRAVE_COOKIES_PATH.");

@@ -200,7 +200,9 @@ export function decryptMacCookie(encryptedHex: string, key: Buffer): string {
   const decipher = createDecipheriv("aes-128-cbc", key, iv);
   decipher.setAutoPadding(false);
   const decoded = Buffer.concat([decipher.update(data), decipher.final()]);
+  if (decoded.length === 0) return "";
   const padding = decoded[decoded.length - 1];
+  if (padding === undefined) return "";
   const unpadded =
     padding > 0 && padding <= 16 ? decoded.slice(0, decoded.length - padding) : decoded;
   return unpadded.toString("utf8");
@@ -225,7 +227,7 @@ export function parseSqliteCookies(
   const lines = output.split(/\r?\n/).filter(Boolean);
   for (const line of lines) {
     const [hostKey, name, valueRaw, encryptedHex] = line.split(separator);
-    if (!name) continue;
+    if (!hostKey || !name) continue;
     const value = valueRaw && valueRaw !== "NULL" ? valueRaw : "";
     const decrypted =
       value || (!encryptedHex ? "" : decryptMacCookie(encryptedHex, key));
