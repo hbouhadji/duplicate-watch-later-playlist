@@ -81,7 +81,13 @@ export function getPlaylistCount(item: any): string | null {
   return null;
 }
 
-export async function listWatchLater(yt: Innertube) {
+export type WatchLaterEntry = {
+  title: string;
+  id: string;
+  duration?: string;
+};
+
+export async function getWatchLaterItems(yt: Innertube): Promise<WatchLaterEntry[]> {
   console.log("Recuperation de Watch later...");
   const playlist = await yt.getPlaylist("WL");
   const items: any[] = [];
@@ -97,19 +103,29 @@ export async function listWatchLater(yt: Innertube) {
   }
 
   const limited = items.slice(0, WATCH_LATER_LIMIT);
-  if (limited.length === 0) {
+  return limited.map((video: any) => ({
+    title: video?.title?.toString?.() ?? "Sans titre",
+    id: video?.id ?? video?.video_id ?? "",
+    duration: video?.duration?.text ?? "",
+    author_name: video?.author?.name ?? "",
+    author_id: video?.author?.id ?? null,
+    thumbnail: video?.thumbnails?.[0]?.url ?? null,
+    video_info: video?.video_info?.text ?? "",
+  }));
+}
+
+export async function listWatchLater(yt: Innertube) {
+  const entries = await getWatchLaterItems(yt);
+  if (entries.length === 0) {
     console.log("Watch later vide.");
     return;
   }
 
-  console.log(`Watch later (${limited.length}) :`);
-  limited.forEach((video: any, index: number) => {
-    const title = video?.title?.toString?.() ?? "Sans titre";
-    const id = video?.id ?? video?.video_id ?? "";
-    const duration = video?.duration?.text ?? "";
-    const parts = [`${index + 1}. ${title}`];
-    if (duration) parts.push(`(${duration})`);
-    if (id) parts.push(`- ${id}`);
+  console.log(`Watch later (${entries.length}) :`);
+  entries.forEach((video, index) => {
+    const parts = [`${index + 1}. ${video.title}`];
+    if (video.duration) parts.push(`(${video.duration})`);
+    if (video.id) parts.push(`- ${video.id}`);
     console.log(parts.join(" "));
   });
 }

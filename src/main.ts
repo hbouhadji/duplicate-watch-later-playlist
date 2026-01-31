@@ -15,10 +15,13 @@ import {
   getPlaylistCount,
   getPlaylistId,
   getPlaylistTitle,
-  getPlaylistsFromLibrary
+  getPlaylistsFromLibrary,
+  getWatchLaterItems,
+  listWatchLater
 } from "./youtube.ts";
+import { input, select } from "@inquirer/prompts";
 
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 type SessionOverrides = {
@@ -120,16 +123,68 @@ function getAccountPageIdByIndex(accounts: any[], index?: number): string | unde
   return getAccountIds(account).page_id;
 }
 
-async function selectAccount(yt: Innertube, accounts: any[]) {
+function renderAccountChoice(account: any, index: number): string {
+  const name =
+    account?.account_name?.toString?.() ??
+    account?.title?.toString?.() ??
+    "Sans nom";
+  const byline = account?.account_byline?.toString?.() ?? "";
+  const handle = account?.channel_handle?.toString?.() ?? "";
+  const ids = getAccountIds(account);
+  const parts = [`${index}. ${name}`];
+  if (handle) parts.push(handle);
+  if (byline && byline !== name) parts.push(byline);
+  if (ids.page_id) parts.push(`page_id=${ids.page_id}`);
+  return parts.join(" - ");
+}
+
+async function promptAccountIndex(accounts: any[]): Promise<number | undefined> {
+  if (!process.stdin.isTTY || accounts.length === 0) return undefined;
+  return await select({
+    message: "Choisis un compte",
+    choices: accounts.map((account: any, index: number) => ({
+      name: renderAccountChoice(account, index),
+      value: index
+    }))
+  });
+}
+
+type ActionChoice = "playlists" | "watch_later" | "watch_later_dump";
+
+async function promptAction(): Promise<ActionChoice> {
+  if (!process.stdin.isTTY) return "watch_later_dump";
+  return await select({
+    message: "Choisis une action",
+    choices: [
+      { name: "Lister les playlists", value: "playlists" },
+      { name: "Lister Watch later", value: "watch_later" },
+      { name: "Dump Watch later (JSON)", value: "watch_later_dump" }
+    ]
+  });
+}
+
+async function promptDumpPath(): Promise<string> {
+  if (!process.stdin.isTTY) return "storage/watch-later.json";
+  return await input({
+    message: "Fichier de sortie",
+    default: "storage/watch-later.json"
+  });
+}
+
+async function selectAccount(
+  yt: Innertube,
+  accounts: any[],
+  index?: number
+) {
   if (
-    Number.isFinite(ACCOUNT_INDEX) &&
+    Number.isFinite(index) &&
     accounts.length > 0 &&
-    ACCOUNT_INDEX! >= 0 &&
-    ACCOUNT_INDEX! < accounts.length
+    index! >= 0 &&
+    index! < accounts.length
   ) {
-    const account = accounts[ACCOUNT_INDEX!];
+    const account = accounts[index!];
     if (account?.endpoint?.call) {
-      console.log(`Selection du compte: ${ACCOUNT_INDEX}`);
+      console.log(`Selection du compte: ${index}`);
       try {
         await account.endpoint.call(yt.actions, { parse: false });
       } catch (err) {
@@ -195,8 +250,12 @@ function printPlaylists(playlists: any[]) {
 export async function main() {
   const { yt, cookie } = await initSession();
   const accounts = await listAccounts(yt);
+  let selectedIndex: number | undefined = ACCOUNT_INDEX;
+  if (!ON_BEHALF_OF_USER && !Number.isFinite(ACCOUNT_INDEX) && accounts.length > 1) {
+    selectedIndex = await promptAccountIndex(accounts);
+  }
   const targetPageId =
-    ON_BEHALF_OF_USER ?? getAccountPageIdByIndex(accounts, ACCOUNT_INDEX);
+    ON_BEHALF_OF_USER ?? getAccountPageIdByIndex(accounts, selectedIndex);
 
   let activeYt = yt;
   if (targetPageId && targetPageId !== ON_BEHALF_OF_USER) {
@@ -204,21 +263,28 @@ export async function main() {
     activeYt = await createSession(cookie, { onBehalfOfUser: targetPageId });
   } else if (
     ACCOUNT_INDEX_AT_CREATE &&
-    Number.isFinite(ACCOUNT_INDEX) &&
+    Number.isFinite(selectedIndex) &&
     !ON_BEHALF_OF_USER
   ) {
-    debugLog(`Recreation session avec account_index=${ACCOUNT_INDEX}`);
-    activeYt = await createSession(cookie, { accountIndex: ACCOUNT_INDEX! });
+    debugLog(`Recreation session avec account_index=${selectedIndex}`);
+    activeYt = await createSession(cookie, { accountIndex: selectedIndex! });
   } else if (!ON_BEHALF_OF_USER) {
-    await selectAccount(yt, accounts);
+    await selectAccount(yt, accounts, selectedIndex);
   }
 
-  const playlists = await fetchPlaylists(activeYt);
-  printPlaylists(playlists);
+  const action = await promptAction();
+  if (action === "playlists") {
+    const playlists = await fetchPlaylists(activeYt);
+    printPlaylists(playlists);
+  } else if (action === "watch_later") {
+    await listWatchLater(activeYt);
+  } else if (action === "watch_later_dump") {
+    const filePath = await promptDumpPath();
+    const entries = await getWatchLaterItems(activeYt);
+    await mkdir(dirname(filePath), { recursive: true });
+    await writeFile(filePath, JSON.stringify(entries, null, 2), "utf8");
+    console.log(`Watch later exporte: ${filePath} (${entries.length} items)`);
+  }
 
   // activeYt.playlist.create("My Playlist", ["QnjJMJhW-gw", "sdWPiBrsCVo"]);
-
-  // if (LIST_WATCH_LATER) {
-  //   await listWatchLater(yt);
-  // }
 }
