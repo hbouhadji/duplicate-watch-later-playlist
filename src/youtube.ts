@@ -1,5 +1,11 @@
 import { Innertube, Mixins, YTNodes } from "youtubei.js";
-import { DEBUG_COOKIES, WATCH_LATER_LIMIT, MAX_PLAYLIST_PAGES, ALL_PLAYLISTS } from "./config.ts";
+import {
+  DEBUG_COOKIES,
+  WATCH_LATER_LIMIT,
+  MAX_PLAYLIST_PAGES,
+  ALL_PLAYLISTS,
+  USE_LIBRARY_PLAYLISTS
+} from "./config.ts";
 import { debugLog } from "./logging.ts";
 
 const { Feed } = Mixins;
@@ -205,4 +211,64 @@ export async function getPlaylistsFromLibrary(yt: any): Promise<any[]> {
   const response = await endpoint.call(yt.actions, { parse: true });
   const feed = new Feed(yt.actions, response, true);
   return await collectPlaylists(feed);
+}
+
+export type EnsurePlaylistResult = {
+  id?: string;
+  created: boolean;
+  title: string;
+};
+
+function normalizeTitle(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function findPlaylistByTitle(playlists: any[], title: string): any | undefined {
+  const target = normalizeTitle(title);
+  return playlists.find((playlist) => normalizeTitle(getPlaylistTitle(playlist)) === target);
+}
+
+export async function getOrCreatePlaylist(
+  yt: any,
+  title: string
+): Promise<EnsurePlaylistResult> {
+  const trimmed = title.trim();
+  if (!trimmed) {
+    throw new Error("Titre de playlist vide.");
+  }
+
+  const feed = await yt.getPlaylists();
+  let playlists = await collectPlaylists(feed);
+  if (USE_LIBRARY_PLAYLISTS || playlists.length <= 2) {
+    try {
+      const libraryPlaylists = await getPlaylistsFromLibrary(yt);
+      if (libraryPlaylists.length > playlists.length) {
+        playlists = libraryPlaylists;
+      }
+    } catch {
+      // ignore library errors
+    }
+  }
+
+  const existing = findPlaylistByTitle(playlists, trimmed);
+  if (existing) {
+    return { id: getPlaylistId(existing) ?? undefined, created: false, title: trimmed };
+  }
+
+  const response = await yt.playlist.create(trimmed, []);
+  const createdId =
+    response?.playlist_id ??
+    response?.playlistId ??
+    response?.id ??
+    response?.playlist?.id ??
+    response?.playlist?.playlist_id;
+  if (typeof createdId === "string" && createdId) {
+    return { id: createdId, created: true, title: trimmed };
+  }
+
+  // Fallback: refetch and match by title
+  const refreshFeed = await yt.getPlaylists();
+  const refreshed = await collectPlaylists(refreshFeed);
+  const created = findPlaylistByTitle(refreshed, trimmed);
+  return { id: getPlaylistId(created) ?? undefined, created: true, title: trimmed };
 }

@@ -12,6 +12,7 @@ import { getBraveCookies } from "./cookies/brave.ts";
 import {
   collectPlaylists,
   getAccountIds,
+  getOrCreatePlaylist,
   getPlaylistCount,
   getPlaylistId,
   getPlaylistTitle,
@@ -19,9 +20,9 @@ import {
   getWatchLaterItems,
   listWatchLater
 } from "./youtube.ts";
-import { input, select } from "@inquirer/prompts";
+import { confirm, input, select } from "@inquirer/prompts";
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 type SessionOverrides = {
@@ -149,7 +150,7 @@ async function promptAccountIndex(accounts: any[]): Promise<number | undefined> 
   });
 }
 
-type ActionChoice = "playlists" | "watch_later" | "watch_later_dump";
+type ActionChoice = "playlists" | "watch_later" | "watch_later_dump" | "playlist_get_or_create";
 
 async function promptAction(): Promise<ActionChoice> {
   if (!process.stdin.isTTY) return "watch_later_dump";
@@ -158,7 +159,8 @@ async function promptAction(): Promise<ActionChoice> {
     choices: [
       { name: "Lister les playlists", value: "playlists" },
       { name: "Lister Watch later", value: "watch_later" },
-      { name: "Dump Watch later (JSON)", value: "watch_later_dump" }
+      { name: "Dump Watch later (JSON)", value: "watch_later_dump" },
+      { name: "Get or create playlist", value: "playlist_get_or_create" }
     ]
   });
 }
@@ -169,6 +171,51 @@ async function promptDumpPath(): Promise<string> {
     message: "Fichier de sortie",
     default: "storage/watch-later.json"
   });
+}
+
+async function promptPlaylistTitle(): Promise<string> {
+  if (!process.stdin.isTTY) return "New Playlist";
+  return await input({
+    message: "Titre de la playlist",
+    default: "New Playlist"
+  });
+}
+
+async function promptImportWatchLater(): Promise<boolean> {
+  if (!process.stdin.isTTY) return false;
+  return await confirm({
+    message: "Importer storage/watch-later.json dans cette playlist ?",
+    default: false
+  });
+}
+
+async function loadWatchLaterIdsFromFile(filePath: string): Promise<string[]> {
+  const raw = await readFile(filePath, "utf8");
+  const parsed = JSON.parse(raw);
+  const ids: string[] = [];
+  if (Array.isArray(parsed)) {
+    for (const item of parsed) {
+      if (typeof item === "string") {
+        ids.push(item);
+      } else if (item && typeof item === "object") {
+        const id = (item as { id?: string }).id;
+        if (id && typeof id === "string") ids.push(id);
+      }
+    }
+  }
+  return Array.from(new Set(ids.filter(Boolean)));
+}
+
+async function addVideosToPlaylist(
+  yt: any,
+  playlistId: string,
+  videoIds: string[]
+) {
+  const chunkSize = 50;
+  for (let i = 0; i < videoIds.length; i += chunkSize) {
+    const chunk = videoIds.slice(i, i + chunkSize);
+    await yt.playlist.addVideos(playlistId, chunk);
+  }
 }
 
 async function selectAccount(
@@ -284,6 +331,29 @@ export async function main() {
     await mkdir(dirname(filePath), { recursive: true });
     await writeFile(filePath, JSON.stringify(entries, null, 2), "utf8");
     console.log(`Watch later exporte: ${filePath} (${entries.length} items)`);
+  } else if (action === "playlist_get_or_create") {
+    const title = await promptPlaylistTitle();
+    const result = await getOrCreatePlaylist(activeYt, title);
+    const status = result.created ? "cree" : "existe";
+    const idSuffix = result.id ? ` (${result.id})` : "";
+    console.log(`Playlist ${status}: ${result.title}${idSuffix}`);
+    if (result.id) {
+      const shouldImport = await promptImportWatchLater();
+      if (shouldImport) {
+        try {
+          const ids = await loadWatchLaterIdsFromFile("storage/watch-later.json");
+          if (ids.length === 0) {
+            console.log("Aucune video a importer.");
+          } else {
+            await addVideosToPlaylist(activeYt, result.id, ids);
+            console.log(`Import termine: ${ids.length} videos ajoutees.`);
+          }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err ?? "");
+          console.error(`[erreur] Import watch later: ${message}`);
+        }
+      }
+    }
   }
 
   // activeYt.playlist.create("My Playlist", ["QnjJMJhW-gw", "sdWPiBrsCVo"]);
