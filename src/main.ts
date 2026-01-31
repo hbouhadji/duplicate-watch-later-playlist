@@ -21,6 +21,11 @@ import {
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
+type SessionOverrides = {
+  accountIndex?: number;
+  onBehalfOfUser?: string;
+};
+
 async function getFromCache<T>(
     file: string,
     ttlMs: number,
@@ -38,6 +43,17 @@ async function getFromCache<T>(
     return v;
 }
 
+async function createSession(cookie: string, overrides: SessionOverrides = {}) {
+  return await Innertube.create({
+    cookie,
+    cache: new UniversalCache(true),
+    account_index: Number.isFinite(overrides.accountIndex)
+      ? overrides.accountIndex
+      : undefined,
+    on_behalf_of_user: overrides.onBehalfOfUser ?? ON_BEHALF_OF_USER
+  });
+}
+
 async function initSession() {
   debugLog("Demarrage");
   console.log("Lecture des cookies Brave...");
@@ -48,15 +64,7 @@ async function initSession() {
 
   console.log("Initialisation Innertube...");
   debugLog("Creation session Innertube");
-  const yt = await Innertube.create({
-    cookie,
-    cache: new UniversalCache(true),
-    account_index:
-      ACCOUNT_INDEX_AT_CREATE && Number.isFinite(ACCOUNT_INDEX)
-        ? ACCOUNT_INDEX
-        : undefined,
-    on_behalf_of_user: ON_BEHALF_OF_USER
-  });
+  const yt = await createSession(cookie);
 
   console.log(`Session connectee: ${yt.session.logged_in ? "oui" : "non"}`);
   if (!yt.session.logged_in) {
@@ -65,7 +73,7 @@ async function initSession() {
     );
   }
 
-  return yt;
+  return { yt, cookie };
 }
 
 async function listAccounts(yt: Innertube): Promise<any[]> {
@@ -103,6 +111,13 @@ async function listAccounts(yt: Innertube): Promise<any[]> {
     );
     return [];
   }
+}
+
+function getAccountPageIdByIndex(accounts: any[], index?: number): string | undefined {
+  if (!Number.isFinite(index)) return undefined;
+  const account = accounts[index!];
+  if (!account) return undefined;
+  return getAccountIds(account).page_id;
 }
 
 async function selectAccount(yt: Innertube, accounts: any[]) {
@@ -178,13 +193,30 @@ function printPlaylists(playlists: any[]) {
 }
 
 export async function main() {
-  const yt = await initSession();
+  const { yt, cookie } = await initSession();
   const accounts = await listAccounts(yt);
-  await selectAccount(yt, accounts);
-  // const playlists = await fetchPlaylists(yt);
-  // printPlaylists(playlists);
+  const targetPageId =
+    ON_BEHALF_OF_USER ?? getAccountPageIdByIndex(accounts, ACCOUNT_INDEX);
 
-  // yt.playlist.create("My Playlist", ["QnjJMJhW-gw", "sdWPiBrsCVo"]);
+  let activeYt = yt;
+  if (targetPageId && targetPageId !== ON_BEHALF_OF_USER) {
+    debugLog(`Recreation session avec on_behalf_of_user=${targetPageId}`);
+    activeYt = await createSession(cookie, { onBehalfOfUser: targetPageId });
+  } else if (
+    ACCOUNT_INDEX_AT_CREATE &&
+    Number.isFinite(ACCOUNT_INDEX) &&
+    !ON_BEHALF_OF_USER
+  ) {
+    debugLog(`Recreation session avec account_index=${ACCOUNT_INDEX}`);
+    activeYt = await createSession(cookie, { accountIndex: ACCOUNT_INDEX! });
+  } else if (!ON_BEHALF_OF_USER) {
+    await selectAccount(yt, accounts);
+  }
+
+  const playlists = await fetchPlaylists(activeYt);
+  printPlaylists(playlists);
+
+  // activeYt.playlist.create("My Playlist", ["QnjJMJhW-gw", "sdWPiBrsCVo"]);
 
   // if (LIST_WATCH_LATER) {
   //   await listWatchLater(yt);

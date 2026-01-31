@@ -116,14 +116,29 @@ export async function listWatchLater(yt: Innertube) {
 
 export function getAccountIds(account: any): { page_id?: string } {
   const payload = account?.endpoint?.payload;
-  const selectIdentity = payload?.selectActiveIdentityEndpoint;
-  const nextEndpoint = selectIdentity?.nextEndpoint;
-  const browseId =
-    nextEndpoint?.browseEndpoint?.browseId ??
-    nextEndpoint?.browseEndpoint?.browseId?.toString?.();
-  if (browseId && typeof browseId === "string") {
-    return { page_id: browseId };
+  const tokens = payload?.supportedTokens;
+  if (Array.isArray(tokens)) {
+    for (const token of tokens) {
+      const pageId = token?.pageIdToken?.pageId ?? token?.pageIdToken?.pageId?.toString?.();
+      if (typeof pageId === "string" && pageId) {
+        return { page_id: pageId };
+      }
+      const gaiaId =
+        token?.accountStateToken?.obfuscatedGaiaId ??
+        token?.accountStateToken?.obfuscatedGaiaId?.toString?.();
+      if (typeof gaiaId === "string" && gaiaId) {
+        return { page_id: gaiaId };
+      }
+      const datasync = token?.datasyncIdToken?.datasyncIdToken;
+      if (typeof datasync === "string" && datasync) {
+        const pageFromDatasync = datasync.split("||")[0];
+        if (pageFromDatasync) {
+          return { page_id: pageFromDatasync };
+        }
+      }
+    }
   }
+
   return {};
 }
 
