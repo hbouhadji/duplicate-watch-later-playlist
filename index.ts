@@ -47,6 +47,8 @@ const ACCOUNT_INDEX = process.env.ACCOUNT_INDEX
 const ON_BEHALF_OF_USER = process.env.ON_BEHALF_OF_USER;
 const ACCOUNT_INDEX_AT_CREATE = process.env.ACCOUNT_INDEX_AT_CREATE === "1";
 const SHOW_ACCOUNT_ENDPOINTS = process.env.SHOW_ACCOUNT_ENDPOINTS === "1";
+const WATCH_LATER_LIMIT = Number(process.env.WATCH_LATER_LIMIT ?? 50);
+const LIST_WATCH_LATER = process.env.LIST_WATCH_LATER !== "0";
 const USE_LIBRARY_PLAYLISTS = process.env.USE_LIBRARY_PLAYLISTS === "1";
 const { Feed } = Mixins;
 const BRAVE_KEYCHAIN_SERVICE =
@@ -945,6 +947,12 @@ async function main() {
     }
     console.log(parts.join(" "));
   });
+
+  yt.playlist.create('My Playlist', ['QnjJMJhW-gw', 'sdWPiBrsCVo']);
+
+  // if (LIST_WATCH_LATER) {
+  //   await listWatchLater(yt);
+  // }
 }
 
 async function collectPlaylists(feed: any): Promise<any[]> {
@@ -1022,6 +1030,39 @@ function getPlaylistCount(item: any): string | null {
     }
   }
   return null;
+}
+
+async function listWatchLater(yt: Innertube) {
+  console.log("Recuperation de Watch later...");
+  const playlist = await yt.getPlaylist("WL");
+  const items: any[] = [];
+  let current = playlist;
+  while (current) {
+    if (Array.isArray(current.videos)) {
+      items.push(...current.videos);
+    }
+    if (!current.has_continuation || items.length >= WATCH_LATER_LIMIT) {
+      break;
+    }
+    current = await current.getContinuation();
+  }
+
+  const limited = items.slice(0, WATCH_LATER_LIMIT);
+  if (limited.length === 0) {
+    console.log("Watch later vide.");
+    return;
+  }
+
+  console.log(`Watch later (${limited.length}) :`);
+  limited.forEach((video: any, index: number) => {
+    const title = video?.title?.toString?.() ?? "Sans titre";
+    const id = video?.id ?? video?.video_id ?? "";
+    const duration = video?.duration?.text ?? "";
+    const parts = [`${index + 1}. ${title}`];
+    if (duration) parts.push(`(${duration})`);
+    if (id) parts.push(`- ${id}`);
+    console.log(parts.join(" "));
+  });
 }
 
 function getAccountIds(account: any): { page_id?: string } {
