@@ -11,7 +11,6 @@
   },
   "dependencies": {
     "@inquirer/prompts": "^8.2.0",
-    "chrome-cookies-secure": "^3.0.1",
     "youtubei.js": "^16.0.1"
   }
 }

@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
@@ -10,40 +10,25 @@ import {
   BRAVE_KEYCHAIN_SERVICE,
   BRAVE_KEYCHAIN_SERVICE_ALT,
   BRAVE_PROFILE,
-  COOKIE_URL,
-  GOOGLE_COOKIE_URL,
   IS_BUN,
   KEYCHAIN_TIMEOUT_MS,
   NODE_BINARY,
-  NODE_COOKIE_TIMEOUT_MS,
   SQLITE_TIMEOUT_MS,
   DEBUG_COOKIES,
-  USE_CHROME_COOKIES_SECURE,
-  USE_SQLITE,
-  USE_YTDLP,
-  YT_DLP_BINARY,
-  YT_DLP_TIMEOUT_MS
 } from "../config.ts";
 import { debugLog } from "../logging.ts";
 import {
   assertValidCookieHeader,
   decodeMaybeBase64,
   deriveBraveKeys,
-  hasAuthCookies,
   isPathLike,
   isValidCookieHeader,
-  mergeCookieHeaders,
-  normalizeCookies,
-  parseNetscapeCookies,
   parseSqliteCookies
 } from "./common.ts";
-import type { ChromeCookiesModule } from "../config.ts";
 
 function getBraveProfileRoots(profile: string): string[] {
   const home = os.homedir();
-  if (!home) {
-    return [];
-  }
+  if (!home) return [];
 
   const braveDirs = [
     "Brave-Browser",
@@ -106,125 +91,16 @@ function resolveBraveProfileOrPath(profile: string): string {
 
   if (candidates.length > 0) {
     const first = candidates[0];
-    if (first) {
-      return first;
-    }
+    if (first) return first;
   }
 
   throw new Error("Plateforme non supportee. Definis BRAVE_COOKIES_PATH.");
 }
 
-async function fetchChromeCookies(
-  chrome: ChromeCookiesModule,
-  uri: string,
-  profileOrPath?: string
-): Promise<string> {
-  if (chrome.getCookiesPromised) {
-    const cookies = await chrome.getCookiesPromised(uri, "header", profileOrPath);
-    return normalizeCookies(cookies);
-  }
-
-  return await new Promise((resolve, reject) => {
-    const callback = (err: unknown, cookies: unknown) => {
-      if (err) {
-        reject(err);
-        return;
-      }
-      resolve(normalizeCookies(cookies));
-    };
-    try {
-      chrome.getCookies(uri, "header", callback, profileOrPath);
-    } catch (err) {
-      reject(err);
-    }
-  });
-}
-
-function fetchCookiesViaNode(uri: string, profileOrPath: string): string {
-  debugLog(`Lecture cookies via Node (${NODE_BINARY}) pour ${uri}`);
-  const nodeScript = [
-    "const chrome = require('chrome-cookies-secure');",
-    "const uri = process.env.NODE_COOKIE_URI;",
-    "const profile = process.env.NODE_COOKIE_PROFILE;",
-    "if (!uri) {",
-    "  process.stderr.write('Missing NODE_COOKIE_URI');",
-    "  process.exit(2);",
-    "}",
-    "chrome.getCookiesPromised(uri, 'header', profile)",
-    ".then((cookies)=>{",
-    "  if (typeof cookies === 'string') process.stdout.write(cookies);",
-    "  else process.stdout.write(JSON.stringify(cookies));",
-    "})",
-    ".catch((err)=>{",
-    "  const msg = err && err.message ? err.message : String(err);",
-    "  process.stderr.write(msg);",
-    "  process.exit(2);",
-    "});"
-  ].join("");
-
-  const result = spawnSync(NODE_BINARY, ["-e", nodeScript], {
-    encoding: "utf8",
-    timeout: NODE_COOKIE_TIMEOUT_MS,
-    env: {
-      ...process.env,
-      NODE_COOKIE_URI: uri,
-      NODE_COOKIE_PROFILE: profileOrPath
-    }
-  });
-
-  if (result.error) {
-    throw new Error(
-      `Impossible d'executer ${NODE_BINARY}. Installe Node ou definis NODE_BINARY.`
-    );
-  }
-
-  if (result.status !== 0) {
-    const stderr = (result.stderr || "").trim();
-    if (result.error && (result.error as { code?: string }).code === "ETIMEDOUT") {
-      throw new Error("Timeout Node cookies. Deverrouille le Trousseau ou ferme Brave.");
-    }
-    throw new Error(stderr || "Echec de l'extraction des cookies via Node.");
-  }
-
-  return normalizeCookies(result.stdout.trim());
-}
-
-function fetchCookiesViaNodeSqlite(): string {
-  debugLog(`Lecture cookies sqlite via Node (${NODE_BINARY})`);
-  const script = path.join(process.cwd(), "scripts", "cookies_sqlite_node.cjs");
-  const result = spawnSync(
-    NODE_BINARY,
-    [script],
-    {
-      encoding: "utf8",
-      timeout: SQLITE_TIMEOUT_MS,
-      env: {
-        ...process.env
-      }
-    }
-  );
-
-  if (result.error) {
-    throw new Error(
-      `Impossible d'executer ${NODE_BINARY}. Installe Node ou definis NODE_BINARY.`
-    );
-  }
-
-  if (result.status !== 0) {
-    const stderr = (result.stderr || "").trim();
-    throw new Error(stderr || "Echec de l'extraction des cookies via Node sqlite.");
-  }
-
-  return normalizeCookies(result.stdout.trim());
-}
 function getKeychainPassword(service: string, account?: string): Buffer {
-  debugLog(
-    `Keychain lookup: service="${service}" account="${account ?? ""}"`
-  );
+  debugLog(`Keychain lookup: service="${service}" account="${account ?? ""}"`);
   const args = ["find-generic-password", "-w", "-s", service];
-  if (account) {
-    args.push("-a", account);
-  }
+  if (account) args.push("-a", account);
   const result = spawnSync("security", args, {
     encoding: "buffer",
     timeout: KEYCHAIN_TIMEOUT_MS
@@ -276,6 +152,7 @@ async function getBraveCookiesViaSqlite(): Promise<string> {
   }
 
   debugLog(`Lecture cookies sqlite: ${dbPath}`);
+
   const envPassword = process.env.BRAVE_SAFE_STORAGE_PASSWORD;
   const candidatePasswords: Array<{ label: string; value: Buffer | string }> = [];
   if (envPassword) {
@@ -289,22 +166,13 @@ async function getBraveCookiesViaSqlite(): Promise<string> {
       try {
         const password = getKeychainPassword(candidate.service, candidate.account);
         const labelBase = `keychain:${candidate.service}:${candidate.account ?? ""}`;
-        candidatePasswords.push({
-          label: labelBase,
-          value: password
-        });
+        candidatePasswords.push({ label: labelBase, value: password });
         const utf8 = password.toString("utf8");
         if (utf8 && utf8 !== password.toString("binary")) {
-          candidatePasswords.push({
-            label: `${labelBase}:utf8`,
-            value: utf8
-          });
+          candidatePasswords.push({ label: `${labelBase}:utf8`, value: utf8 });
           const decoded = decodeMaybeBase64(utf8);
           if (decoded !== utf8) {
-            candidatePasswords.push({
-              label: `${labelBase}:utf8:base64`,
-              value: decoded
-            });
+            candidatePasswords.push({ label: `${labelBase}:utf8:base64`, value: decoded });
           }
         }
       } catch (err) {
@@ -331,7 +199,7 @@ async function getBraveCookiesViaSqlite(): Promise<string> {
     fs.copyFileSync(dbPath, tmpDb);
   } catch {
     await rm(tmpDir, { recursive: true, force: true });
-    throw new Error("Impossible de copier la base Cookies (ferme Brave).");
+    throw new Error("Impossible de copier la base Cookies (ferme Brave)." );
   }
 
   const result = spawnSync(
@@ -355,7 +223,6 @@ async function getBraveCookiesViaSqlite(): Promise<string> {
     throw new Error(stderr || "Impossible de lire la base Cookies.");
   }
 
-  const iterationCandidates = [1003, 1, 10000, 2000, 1500];
   let metaVersion = 0;
   const metaResult = spawnSync(
     "sqlite3",
@@ -368,6 +235,7 @@ async function getBraveCookiesViaSqlite(): Promise<string> {
     if (Number.isFinite(parsed)) metaVersion = parsed;
   }
 
+  const iterationCandidates = [1003];
   let bestStats:
     | { label: string; stats: ReturnType<typeof parseSqliteCookies> }
     | null = null;
@@ -376,9 +244,9 @@ async function getBraveCookiesViaSqlite(): Promise<string> {
       const keys = deriveBraveKeys(candidate.value, iterations);
       const stats = parseSqliteCookies(result.stdout || "", keys, metaVersion);
       if (DEBUG_COOKIES) {
-    debugLog(
-      `SQLite stats (${candidate.label} | iter=${iterations}): total=${stats.total} plain=${stats.plain} v10=${stats.v10} v11=${stats.v11} decrypted=${stats.decrypted} skipped=${stats.skipped} skipped_non_ascii=${stats.skipped_non_ascii}`
-    );
+        debugLog(
+          `SQLite stats (${candidate.label} | iter=${iterations}): total=${stats.total} plain=${stats.plain} v10=${stats.v10} v11=${stats.v11} decrypted=${stats.decrypted} skipped=${stats.skipped} skipped_non_ascii=${stats.skipped_non_ascii}`
+        );
       }
       if (stats.header && isValidCookieHeader(stats.header)) {
         bestStats = { label: `${candidate.label} | iter=${iterations}`, stats };
@@ -392,6 +260,7 @@ async function getBraveCookiesViaSqlite(): Promise<string> {
       break;
     }
   }
+
   await rm(tmpDir, { recursive: true, force: true });
   if (!bestStats || !bestStats.stats.header) {
     if (bestStats?.stats && (bestStats.stats.skipped > 0 || bestStats.stats.total > 0)) {
@@ -409,192 +278,29 @@ async function getBraveCookiesViaSqlite(): Promise<string> {
   return bestStats.stats.header;
 }
 
-async function fetchCookiesViaYtDlp(): Promise<string> {
-  debugLog(`Lecture cookies via yt-dlp (${YT_DLP_BINARY})`);
-  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "yt-cookies-"));
-  const cookieFile = path.join(tmpDir, "cookies.txt");
-  const browserSpec = `brave:${BRAVE_PROFILE}`;
-  const args = ["--cookies-from-browser", browserSpec, "--cookies", cookieFile];
-
-  try {
-    let result = spawnSync(YT_DLP_BINARY, args, {
-      encoding: "utf8",
-      timeout: YT_DLP_TIMEOUT_MS
-    });
-    let stderr = (result.stderr || "").trim();
-
-    if (
-      result.status !== 0 &&
-      /URL|No video|nothing to do|You must provide/i.test(stderr)
-    ) {
-      const fallbackArgs = [
-        ...args,
-        "--skip-download",
-        "--no-playlist",
-        COOKIE_URL
-      ];
-      result = spawnSync(YT_DLP_BINARY, fallbackArgs, {
-        encoding: "utf8",
-        timeout: YT_DLP_TIMEOUT_MS
-      });
-      stderr = (result.stderr || "").trim();
+function fetchCookiesViaNodeSqlite(): string {
+  debugLog(`Lecture cookies sqlite via Node (${NODE_BINARY})`);
+  const script = path.join(process.cwd(), "scripts", "cookies_sqlite_node.cjs");
+  const result = spawnSync(NODE_BINARY, [script], {
+    encoding: "utf8",
+    timeout: SQLITE_TIMEOUT_MS,
+    env: {
+      ...process.env
     }
+  });
 
-    let content = "";
-    try {
-      content = await readFile(cookieFile, "utf8");
-    } catch {
-      content = "";
-    }
-
-    const header = parseNetscapeCookies(content, [
-      "youtube.com",
-      "google.com",
-      "accounts.google.com"
-    ]);
-    if (header) {
-      assertValidCookieHeader(header, "yt-dlp");
-      debugLog(
-        `Cookies yt-dlp: SAPISID=${/SAPISID=/.test(header)} __Secure-3PAPISID=${/__Secure-3PAPISID=/.test(
-          header
-        )}`
-      );
-      return header;
-    }
-
-    if (result.error) {
-      if ((result.error as { code?: string }).code === "ETIMEDOUT") {
-        throw new Error("Timeout yt-dlp. Verifie l'acces reseau ou ferme Brave.");
-      }
-      throw new Error(
-        `Impossible d'executer ${YT_DLP_BINARY}. Installe yt-dlp ou definis YT_DLP_BINARY.`
-      );
-    }
-
-    throw new Error(stderr || "yt-dlp n'a pas retourne de cookies utilisables.");
-  } finally {
-    await rm(tmpDir, { recursive: true, force: true });
-  }
-}
-
-async function getCookiesForUrlWithModule(
-  chrome: ChromeCookiesModule,
-  url: string
-): Promise<string> {
-  const profileOrPath = resolveBraveProfileOrPath(BRAVE_PROFILE);
-  try {
-    const cookies = await fetchChromeCookies(chrome, url, profileOrPath);
-    if (cookies) {
-      return cookies;
-    }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err ?? "");
-    const pathHint = isPathLike(profileOrPath)
-      ? ` Chemin: ${profileOrPath}.`
-      : "";
+  if (result.error) {
     throw new Error(
-      `Impossible de lire les cookies Brave pour ${url} (profil: ${BRAVE_PROFILE}). ` +
-        "Ferme Brave et reessaie, ou definit BRAVE_PROFILE/BRAVE_COOKIES_PATH. " +
-        pathHint +
-        message
+      `Impossible d'executer ${NODE_BINARY}. Installe Node ou definis NODE_BINARY.`
     );
   }
 
-  const pathHint = isPathLike(profileOrPath)
-    ? ` Chemin: ${profileOrPath}.`
-    : "";
-  throw new Error(
-    `Impossible de lire les cookies Brave pour ${url} (profil: ${BRAVE_PROFILE}). ` +
-      "Ferme Brave et reessaie, ou definit BRAVE_PROFILE/BRAVE_COOKIES_PATH. " +
-      pathHint +
-      "Cookies vides."
-  );
-}
-
-function getCookiesForUrlViaNode(url: string): string {
-  const profileOrPath = resolveBraveProfileOrPath(BRAVE_PROFILE);
-  try {
-    const cookies = fetchCookiesViaNode(url, profileOrPath);
-    if (cookies) {
-      return cookies;
-    }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err ?? "");
-    const pathHint = isPathLike(profileOrPath)
-      ? ` Chemin: ${profileOrPath}.`
-      : "";
-    throw new Error(
-      `Impossible de lire les cookies Brave pour ${url} (profil: ${BRAVE_PROFILE}). ` +
-        "Ferme Brave et reessaie, ou definit BRAVE_PROFILE/BRAVE_COOKIES_PATH. " +
-        pathHint +
-        message
-    );
+  if (result.status !== 0) {
+    const stderr = (result.stderr || "").trim();
+    throw new Error(stderr || "Echec de l'extraction des cookies via Node sqlite.");
   }
 
-  const pathHint = isPathLike(profileOrPath)
-    ? ` Chemin: ${profileOrPath}.`
-    : "";
-  throw new Error(
-    `Impossible de lire les cookies Brave pour ${url} (profil: ${BRAVE_PROFILE}). ` +
-      "Ferme Brave et reessaie, ou definit BRAVE_PROFILE/BRAVE_COOKIES_PATH. " +
-      pathHint +
-      "Cookies vides."
-  );
-}
-
-async function loadChromeCookiesModule(): Promise<ChromeCookiesModule> {
-  try {
-    const mod = (await import("chrome-cookies-secure")) as unknown;
-    return (mod as { default?: ChromeCookiesModule }).default ?? (mod as ChromeCookiesModule);
-  } catch {
-    throw new Error(
-      "chrome-cookies-secure manquant. Lance `bun add chrome-cookies-secure`."
-    );
-  }
-}
-
-async function getBraveCookiesWithModule(): Promise<string> {
-  debugLog("Chargement chrome-cookies-secure (module)");
-  const chrome = await loadChromeCookiesModule();
-
-  const youtubeCookies = await getCookiesForUrlWithModule(chrome, COOKIE_URL);
-  assertValidCookieHeader(youtubeCookies, "chrome-cookies-secure");
-  debugLog(
-    `Cookies module: SAPISID=${/SAPISID=/.test(youtubeCookies)} __Secure-3PAPISID=${/__Secure-3PAPISID=/.test(
-      youtubeCookies
-    )}`
-  );
-  if (hasAuthCookies(youtubeCookies)) {
-    return youtubeCookies;
-  }
-
-  try {
-    const googleCookies = await getCookiesForUrlWithModule(chrome, GOOGLE_COOKIE_URL);
-    return mergeCookieHeaders(youtubeCookies, googleCookies);
-  } catch {
-    return youtubeCookies;
-  }
-}
-
-async function getBraveCookiesViaNode(): Promise<string> {
-  debugLog("Lecture cookies via Node helper");
-  const youtubeCookies = getCookiesForUrlViaNode(COOKIE_URL);
-  assertValidCookieHeader(youtubeCookies, "node-helper");
-  debugLog(
-    `Cookies node: SAPISID=${/SAPISID=/.test(youtubeCookies)} __Secure-3PAPISID=${/__Secure-3PAPISID=/.test(
-      youtubeCookies
-    )}`
-  );
-  if (hasAuthCookies(youtubeCookies)) {
-    return youtubeCookies;
-  }
-
-  try {
-    const googleCookies = getCookiesForUrlViaNode(GOOGLE_COOKIE_URL);
-    return mergeCookieHeaders(youtubeCookies, googleCookies);
-  } catch {
-    return youtubeCookies;
-  }
+  return (result.stdout || "").trim();
 }
 
 export async function getBraveCookies(): Promise<string> {
@@ -604,45 +310,10 @@ export async function getBraveCookies(): Promise<string> {
     return envCookie;
   }
 
-  if (USE_CHROME_COOKIES_SECURE) {
-    debugLog("Force chrome-cookies-secure (sans fallback)");
-    return await getBraveCookiesWithModule();
-  }
-
-  if (USE_YTDLP) {
-    return await fetchCookiesViaYtDlp();
-  }
-
   if (IS_BUN) {
-    debugLog("Execution sous Bun -> helper Node + fallback yt-dlp");
-    if (USE_SQLITE) {
-      return fetchCookiesViaNodeSqlite();
-    }
-    if (process.platform === "darwin") {
-      try {
-        return await getBraveCookiesViaSqlite();
-      } catch (err) {
-        debugLog(
-          `SQLite cookies a echoue: ${err instanceof Error ? err.message : String(err ?? "")}`
-        );
-      }
-    }
-
-    try {
-      return await getBraveCookiesViaNode();
-    } catch (err) {
-      debugLog(
-        `Node cookies a echoue: ${err instanceof Error ? err.message : String(err ?? "")}`
-      );
-      try {
-        return await fetchCookiesViaYtDlp();
-      } catch (ytErr) {
-        const nodeMessage = err instanceof Error ? err.message : String(err ?? "");
-        const ytdlpMessage = ytErr instanceof Error ? ytErr.message : String(ytErr ?? "");
-        throw new Error(`${nodeMessage} | Fallback yt-dlp: ${ytdlpMessage}`);
-      }
-    }
+    debugLog("Execution sous Bun -> helper Node sqlite");
+    return fetchCookiesViaNodeSqlite();
   }
 
-  return await getBraveCookiesWithModule();
+  return await getBraveCookiesViaSqlite();
 }

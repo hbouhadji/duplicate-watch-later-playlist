@@ -1,9 +1,5 @@
 import { createDecipheriv, pbkdf2Sync } from "node:crypto";
-import {
-  ALL_COOKIE_DOMAINS,
-  COOKIE_ALLOWLIST,
-  MAX_COOKIE_HEADER_BYTES
-} from "../config.ts";
+import { COOKIE_ALLOWLIST, MAX_COOKIE_HEADER_BYTES } from "../config.ts";
 
 export function isValidCookieHeader(header: string): boolean {
   if (!header) return false;
@@ -21,67 +17,13 @@ export function assertValidCookieHeader(header: string, source: string) {
     throw new Error(
       `Cookies invalides (${source}). Valeurs non-ASCII detectees, ` +
         "probable cle Brave Safe Storage non prise en charge. " +
-        "Utilise USE_SQLITE=1 ou USE_YTDLP=1."
+        "Utilise USE_SQLITE=1."
     );
   }
 }
 
-export function normalizeCookies(value: unknown): string {
-  if (typeof value === "string") {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => {
-        if (item && typeof item === "object") {
-          const name = (item as { name?: string }).name;
-          const val = (item as { value?: string }).value;
-          if (name && typeof val === "string") {
-            return `${name}=${val}`;
-          }
-        }
-        return "";
-      })
-      .filter(Boolean)
-      .join("; ");
-  }
-  if (value && typeof value === "object") {
-    const maybe = (value as { cookies?: unknown }).cookies;
-    if (maybe && typeof maybe === "string") {
-      return maybe;
-    }
-  }
-  return "";
-}
-
 export function isPathLike(value: string): boolean {
   return value.includes("/") || value.includes("\\");
-}
-
-export function hasAuthCookies(cookieHeader: string): boolean {
-  return /SAPISID=/.test(cookieHeader) || /__Secure-3PAPISID=/.test(cookieHeader);
-}
-
-export function mergeCookieHeaders(...headers: string[]): string {
-  const jar = new Map<string, string>();
-  for (const header of headers) {
-    const parts = header
-      .split(";")
-      .map((part) => part.trim())
-      .filter(Boolean);
-    for (const part of parts) {
-      const idx = part.indexOf("=");
-      if (idx === -1) continue;
-      const name = part.slice(0, idx).trim();
-      const value = part.slice(idx + 1);
-      if (name) {
-        jar.set(name, value);
-      }
-    }
-  }
-  return Array.from(jar.entries())
-    .map(([name, value]) => `${name}=${value}`)
-    .join("; ");
 }
 
 export const DEFAULT_COOKIE_ALLOWLIST = [
@@ -116,55 +58,6 @@ export function buildCookieHeader(
     allowlist ? allowlist.has(name) : true
   );
   return entries.map(([name, value]) => `${name}=${value}`).join("; ");
-}
-
-export function parseNetscapeCookies(content: string, domains: string[]): string {
-  const jar = new Map<string, { value: string; host: string }>();
-  const domainList = domains.map((domain) => domain.toLowerCase());
-
-  const matchesDomain = (rawDomain: string) => {
-    if (ALL_COOKIE_DOMAINS) {
-      return true;
-    }
-    const cleaned = rawDomain.replace(/^#HttpOnly_/i, "").toLowerCase();
-    return domainList.some((domain) =>
-      cleaned === domain || cleaned.endsWith(`.${domain}`)
-    );
-  };
-
-  for (const line of content.split(/\r?\n/)) {
-    if (!line) continue;
-    if (line.startsWith("#") && !line.startsWith("#HttpOnly_")) continue;
-    const parts = line.split("\t");
-    if (parts.length < 7) continue;
-    const domain = parts[0]?.trim();
-    const name = parts[5]?.trim();
-    const value = parts[6]?.trim();
-    if (!domain || !name || value === undefined) continue;
-    if (!matchesDomain(domain)) continue;
-    const host = domain.replace(/^#HttpOnly_/i, "");
-    const existing = jar.get(name);
-    if (!existing || isPreferredHost(host, existing.host)) {
-      jar.set(name, { value, host });
-    }
-  }
-
-  const allowlist =
-    COOKIE_ALLOWLIST?.split(",").map((name) => name.trim()).filter(Boolean) ??
-    (ALL_COOKIE_DOMAINS ? DEFAULT_COOKIE_ALLOWLIST : []);
-  const allowset = allowlist.length > 0 ? new Set(allowlist) : undefined;
-
-  const flatJar = new Map<string, string>();
-  for (const [name, entry] of jar.entries()) {
-    flatJar.set(name, entry.value);
-  }
-
-  let header = buildCookieHeader(flatJar, allowset);
-  if (Buffer.byteLength(header, "utf8") > MAX_COOKIE_HEADER_BYTES) {
-    const fallbackAllowset = new Set(DEFAULT_COOKIE_ALLOWLIST);
-    header = buildCookieHeader(flatJar, fallbackAllowset);
-  }
-  return header;
 }
 
 export function decodeMaybeBase64(secret: string): Buffer | string {

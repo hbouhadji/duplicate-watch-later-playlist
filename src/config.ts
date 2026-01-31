@@ -1,41 +1,15 @@
-export type ChromeCookiesModule = {
-  getCookies: (
-    uri: string,
-    format: string,
-    callback: (err: unknown, cookies: unknown) => void,
-    profileOrPath?: string
-  ) => void;
-  getCookiesPromised?: (
-    uri: string,
-    format?: string,
-    profileOrPath?: string
-  ) => Promise<unknown>;
-};
-
-export const COOKIE_URL = "https://www.youtube.com";
-export const GOOGLE_COOKIE_URL = "https://www.google.com";
 export const BRAVE_PROFILE = process.env.BRAVE_PROFILE ?? "Default";
 export const BRAVE_COOKIES_PATH = process.env.BRAVE_COOKIES_PATH;
 export const NODE_BINARY = process.env.NODE_BINARY ?? "node";
 export const IS_BUN =
   typeof process !== "undefined" &&
   !!(process as { versions?: { bun?: string } }).versions?.bun;
-export const YT_DLP_BINARY = process.env.YT_DLP_BINARY ?? "yt-dlp";
 export const DEBUG_COOKIES =
   process.env.DEBUG_COOKIES === "1" || process.env.DEBUG === "1";
-export const NODE_COOKIE_TIMEOUT_MS = Number(
-  process.env.NODE_COOKIE_TIMEOUT_MS ?? 15000
-);
-export const YT_DLP_TIMEOUT_MS = Number(process.env.YT_DLP_TIMEOUT_MS ?? 20000);
 export const SQLITE_TIMEOUT_MS = Number(process.env.SQLITE_TIMEOUT_MS ?? 15000);
 export const KEYCHAIN_TIMEOUT_MS = Number(process.env.KEYCHAIN_TIMEOUT_MS ?? 15000);
 export const MAX_PLAYLIST_PAGES = Number(process.env.MAX_PLAYLIST_PAGES ?? 3);
 export const ALL_PLAYLISTS = process.env.ALL_PLAYLISTS === "1";
-export const USE_YTDLP = process.env.USE_YTDLP === "1";
-export const USE_SQLITE = process.env.USE_SQLITE === "1";
-export const USE_CHROME_COOKIES_SECURE =
-  process.env.USE_CHROME_COOKIES_SECURE === "1";
-export const ALL_COOKIE_DOMAINS = process.env.ALL_COOKIE_DOMAINS === "1";
 export const COOKIE_ALLOWLIST = process.env.COOKIE_ALLOWLIST;
 export const MAX_COOKIE_HEADER_BYTES = Number(
   process.env.MAX_COOKIE_HEADER_BYTES ?? 8192
