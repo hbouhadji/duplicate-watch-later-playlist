@@ -33,6 +33,8 @@ export const MAX_PLAYLIST_PAGES = Number(process.env.MAX_PLAYLIST_PAGES ?? 3);
 export const ALL_PLAYLISTS = process.env.ALL_PLAYLISTS === "1";
 export const USE_YTDLP = process.env.USE_YTDLP === "1";
 export const USE_SQLITE = process.env.USE_SQLITE === "1";
+export const USE_CHROME_COOKIES_SECURE =
+  process.env.USE_CHROME_COOKIES_SECURE === "1";
 export const ALL_COOKIE_DOMAINS = process.env.ALL_COOKIE_DOMAINS === "1";
 export const COOKIE_ALLOWLIST = process.env.COOKIE_ALLOWLIST;
 export const MAX_COOKIE_HEADER_BYTES = Number(

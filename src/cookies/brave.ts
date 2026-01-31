@@ -17,6 +17,8 @@ import {
   NODE_BINARY,
   NODE_COOKIE_TIMEOUT_MS,
   SQLITE_TIMEOUT_MS,
+  DEBUG_COOKIES,
+  USE_CHROME_COOKIES_SECURE,
   USE_SQLITE,
   USE_YTDLP,
   YT_DLP_BINARY,
@@ -26,9 +28,10 @@ import { debugLog } from "../logging.ts";
 import {
   assertValidCookieHeader,
   decodeMaybeBase64,
-  deriveBraveKey,
+  deriveBraveKeys,
   hasAuthCookies,
   isPathLike,
+  isValidCookieHeader,
   mergeCookieHeaders,
   normalizeCookies,
   parseNetscapeCookies,
@@ -186,13 +189,44 @@ function fetchCookiesViaNode(uri: string, profileOrPath: string): string {
   return normalizeCookies(result.stdout.trim());
 }
 
-function getKeychainPassword(service: string, account?: string): string {
+function fetchCookiesViaNodeSqlite(): string {
+  debugLog(`Lecture cookies sqlite via Node (${NODE_BINARY})`);
+  const script = path.join(process.cwd(), "scripts", "cookies_sqlite_node.cjs");
+  const result = spawnSync(
+    NODE_BINARY,
+    [script],
+    {
+      encoding: "utf8",
+      timeout: SQLITE_TIMEOUT_MS,
+      env: {
+        ...process.env
+      }
+    }
+  );
+
+  if (result.error) {
+    throw new Error(
+      `Impossible d'executer ${NODE_BINARY}. Installe Node ou definis NODE_BINARY.`
+    );
+  }
+
+  if (result.status !== 0) {
+    const stderr = (result.stderr || "").trim();
+    throw new Error(stderr || "Echec de l'extraction des cookies via Node sqlite.");
+  }
+
+  return normalizeCookies(result.stdout.trim());
+}
+function getKeychainPassword(service: string, account?: string): Buffer {
+  debugLog(
+    `Keychain lookup: service="${service}" account="${account ?? ""}"`
+  );
   const args = ["find-generic-password", "-w", "-s", service];
   if (account) {
     args.push("-a", account);
   }
   const result = spawnSync("security", args, {
-    encoding: "utf8",
+    encoding: "buffer",
     timeout: KEYCHAIN_TIMEOUT_MS
   });
 
@@ -204,24 +238,24 @@ function getKeychainPassword(service: string, account?: string): string {
   }
 
   if (result.status !== 0) {
-    const stderr = (result.stderr || "").trim();
+    const stderr = ((result.stderr as Buffer | null)?.toString("utf8") || "").trim();
     throw new Error(stderr || "Keychain introuvable.");
   }
 
-  const password = (result.stdout || "").trim();
-  if (!password) {
+  const stdout = result.stdout as Buffer | null;
+  if (!stdout || stdout.length === 0) {
     throw new Error("Mot de passe Trousseau vide.");
   }
+  let password = stdout;
+  if (password[password.length - 1] === 0x0a) {
+    password = password.subarray(0, password.length - 1);
+  }
+  debugLog(`Keychain password length: ${password.length}`);
   return password;
 }
 
-function getBraveSafeStoragePassword(): Buffer | string {
-  const envPassword = process.env.BRAVE_SAFE_STORAGE_PASSWORD;
-  if (envPassword) {
-    return decodeMaybeBase64(envPassword);
-  }
-
-  const candidates: Array<{ service: string; account?: string }> = [
+function getBraveSafeStorageCandidates(): Array<{ service: string; account?: string }> {
+  return [
     { service: BRAVE_KEYCHAIN_SERVICE, account: BRAVE_KEYCHAIN_ACCOUNT },
     { service: BRAVE_KEYCHAIN_SERVICE, account: BRAVE_KEYCHAIN_ACCOUNT_ALT },
     { service: BRAVE_KEYCHAIN_SERVICE },
@@ -229,18 +263,6 @@ function getBraveSafeStoragePassword(): Buffer | string {
     { service: BRAVE_KEYCHAIN_SERVICE_ALT, account: BRAVE_KEYCHAIN_ACCOUNT_ALT },
     { service: BRAVE_KEYCHAIN_SERVICE_ALT }
   ];
-
-  let lastError: Error | null = null;
-  for (const candidate of candidates) {
-    try {
-      const password = getKeychainPassword(candidate.service, candidate.account);
-      return decodeMaybeBase64(password);
-    } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err));
-    }
-  }
-
-  throw lastError ?? new Error("Keychain introuvable.");
 }
 
 async function getBraveCookiesViaSqlite(): Promise<string> {
@@ -254,8 +276,45 @@ async function getBraveCookiesViaSqlite(): Promise<string> {
   }
 
   debugLog(`Lecture cookies sqlite: ${dbPath}`);
-  const password = getBraveSafeStoragePassword();
-  const key = deriveBraveKey(password);
+  const envPassword = process.env.BRAVE_SAFE_STORAGE_PASSWORD;
+  const candidatePasswords: Array<{ label: string; value: Buffer | string }> = [];
+  if (envPassword) {
+    candidatePasswords.push({
+      label: "env:BRAVE_SAFE_STORAGE_PASSWORD",
+      value: decodeMaybeBase64(envPassword)
+    });
+  } else {
+    let lastError: Error | null = null;
+    for (const candidate of getBraveSafeStorageCandidates()) {
+      try {
+        const password = getKeychainPassword(candidate.service, candidate.account);
+        const labelBase = `keychain:${candidate.service}:${candidate.account ?? ""}`;
+        candidatePasswords.push({
+          label: labelBase,
+          value: password
+        });
+        const utf8 = password.toString("utf8");
+        if (utf8 && utf8 !== password.toString("binary")) {
+          candidatePasswords.push({
+            label: `${labelBase}:utf8`,
+            value: utf8
+          });
+          const decoded = decodeMaybeBase64(utf8);
+          if (decoded !== utf8) {
+            candidatePasswords.push({
+              label: `${labelBase}:utf8:base64`,
+              value: decoded
+            });
+          }
+        }
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+      }
+    }
+    if (candidatePasswords.length === 0) {
+      throw lastError ?? new Error("Keychain introuvable.");
+    }
+  }
 
   const separator = "\u001f";
   const query =
@@ -296,10 +355,46 @@ async function getBraveCookiesViaSqlite(): Promise<string> {
     throw new Error(stderr || "Impossible de lire la base Cookies.");
   }
 
-  const { header, skipped } = parseSqliteCookies(result.stdout || "", key);
+  const iterationCandidates = [1003, 1, 10000, 2000, 1500];
+  let metaVersion = 0;
+  const metaResult = spawnSync(
+    "sqlite3",
+    ["-readonly", tmpDb, "select value from meta where key='version' limit 1;"],
+    { encoding: "utf8", timeout: SQLITE_TIMEOUT_MS }
+  );
+  if (metaResult.status === 0) {
+    const raw = (metaResult.stdout || "").trim();
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed)) metaVersion = parsed;
+  }
+
+  let bestStats:
+    | { label: string; stats: ReturnType<typeof parseSqliteCookies> }
+    | null = null;
+  for (const candidate of candidatePasswords) {
+    for (const iterations of iterationCandidates) {
+      const keys = deriveBraveKeys(candidate.value, iterations);
+      const stats = parseSqliteCookies(result.stdout || "", keys, metaVersion);
+      if (DEBUG_COOKIES) {
+    debugLog(
+      `SQLite stats (${candidate.label} | iter=${iterations}): total=${stats.total} plain=${stats.plain} v10=${stats.v10} v11=${stats.v11} decrypted=${stats.decrypted} skipped=${stats.skipped} skipped_non_ascii=${stats.skipped_non_ascii}`
+    );
+      }
+      if (stats.header && isValidCookieHeader(stats.header)) {
+        bestStats = { label: `${candidate.label} | iter=${iterations}`, stats };
+        break;
+      }
+      if (!bestStats) {
+        bestStats = { label: `${candidate.label} | iter=${iterations}`, stats };
+      }
+    }
+    if (bestStats?.stats.header && isValidCookieHeader(bestStats.stats.header)) {
+      break;
+    }
+  }
   await rm(tmpDir, { recursive: true, force: true });
-  if (!header) {
-    if (skipped > 0) {
+  if (!bestStats || !bestStats.stats.header) {
+    if (bestStats?.stats && (bestStats.stats.skipped > 0 || bestStats.stats.total > 0)) {
       throw new Error(
         "Dechiffrement cookies invalide. Autorise l'acces au Trousseau " +
           "ou fournis BRAVE_SAFE_STORAGE_PASSWORD."
@@ -307,8 +402,11 @@ async function getBraveCookiesViaSqlite(): Promise<string> {
     }
     throw new Error("Aucun cookie lisible dans la base Brave.");
   }
-  assertValidCookieHeader(header, "sqlite");
-  return header;
+  if (DEBUG_COOKIES) {
+    debugLog(`SQLite selected key: ${bestStats.label}`);
+  }
+  assertValidCookieHeader(bestStats.stats.header, "sqlite");
+  return bestStats.stats.header;
 }
 
 async function fetchCookiesViaYtDlp(): Promise<string> {
@@ -506,6 +604,11 @@ export async function getBraveCookies(): Promise<string> {
     return envCookie;
   }
 
+  if (USE_CHROME_COOKIES_SECURE) {
+    debugLog("Force chrome-cookies-secure (sans fallback)");
+    return await getBraveCookiesWithModule();
+  }
+
   if (USE_YTDLP) {
     return await fetchCookiesViaYtDlp();
   }
@@ -513,7 +616,7 @@ export async function getBraveCookies(): Promise<string> {
   if (IS_BUN) {
     debugLog("Execution sous Bun -> helper Node + fallback yt-dlp");
     if (USE_SQLITE) {
-      return await getBraveCookiesViaSqlite();
+      return fetchCookiesViaNodeSqlite();
     }
     if (process.platform === "darwin") {
       try {
