@@ -17,6 +17,7 @@ import {
   getPlaylistId,
   getPlaylistTitle,
   getPlaylistsFromLibrary,
+  clearWatchLater,
   getWatchLaterItems,
   listWatchLater
 } from "./youtube.ts";
@@ -150,7 +151,12 @@ async function promptAccountIndex(accounts: any[]): Promise<number | undefined> 
   });
 }
 
-type ActionChoice = "playlists" | "watch_later" | "watch_later_dump" | "playlist_get_or_create";
+type ActionChoice =
+  | "playlists"
+  | "watch_later"
+  | "watch_later_dump"
+  | "watch_later_clear"
+  | "playlist_get_or_create";
 
 async function promptAction(): Promise<ActionChoice> {
   if (!process.stdin.isTTY) return "watch_later_dump";
@@ -160,6 +166,7 @@ async function promptAction(): Promise<ActionChoice> {
       { name: "Lister les playlists", value: "playlists" },
       { name: "Lister Watch later", value: "watch_later" },
       { name: "Dump Watch later (JSON)", value: "watch_later_dump" },
+      { name: "Supprimer toutes les videos Watch later", value: "watch_later_clear" },
       { name: "Get or create playlist", value: "playlist_get_or_create" }
     ]
   });
@@ -178,6 +185,14 @@ async function promptPlaylistTitle(): Promise<string> {
   return await input({
     message: "Titre de la playlist",
     default: "New Playlist"
+  });
+}
+
+async function promptWatchLaterClearConfirm(): Promise<boolean> {
+  if (!process.stdin.isTTY) return false;
+  return await confirm({
+    message: "Confirmer la suppression de toutes les videos Watch later ?",
+    default: false
   });
 }
 
@@ -331,6 +346,13 @@ export async function main() {
     await mkdir(dirname(filePath), { recursive: true });
     await writeFile(filePath, JSON.stringify(entries, null, 2), "utf8");
     console.log(`Watch later exporte: ${filePath} (${entries.length} items)`);
+  } else if (action === "watch_later_clear") {
+    const ok = await promptWatchLaterClearConfirm();
+    if (ok) {
+      await clearWatchLater(activeYt);
+    } else {
+      console.log("Suppression annulee.");
+    }
   } else if (action === "playlist_get_or_create") {
     const title = await promptPlaylistTitle();
     const result = await getOrCreatePlaylist(activeYt, title);

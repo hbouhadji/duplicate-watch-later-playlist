@@ -22,6 +22,9 @@ export const ACCOUNT_INDEX_AT_CREATE =
   process.env.ACCOUNT_INDEX_AT_CREATE === "1";
 export const SHOW_ACCOUNT_ENDPOINTS = process.env.SHOW_ACCOUNT_ENDPOINTS === "1";
 export const WATCH_LATER_LIMIT = Number(process.env.WATCH_LATER_LIMIT ?? 50);
+export const WATCH_LATER_DELETE_LIMIT = Number(
+  process.env.WATCH_LATER_DELETE_LIMIT ?? 500
+);
 export const LIST_WATCH_LATER = process.env.LIST_WATCH_LATER !== "0";
 export const USE_LIBRARY_PLAYLISTS = process.env.USE_LIBRARY_PLAYLISTS === "1";
 export const BRAVE_KEYCHAIN_SERVICE =

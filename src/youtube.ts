@@ -2,6 +2,7 @@ import { Innertube, Mixins, YTNodes } from "youtubei.js";
 import {
   DEBUG_COOKIES,
   WATCH_LATER_LIMIT,
+  WATCH_LATER_DELETE_LIMIT,
   MAX_PLAYLIST_PAGES,
   ALL_PLAYLISTS,
   USE_LIBRARY_PLAYLISTS
@@ -93,7 +94,10 @@ export type WatchLaterEntry = {
   duration?: string;
 };
 
-export async function getWatchLaterItems(yt: Innertube): Promise<WatchLaterEntry[]> {
+export async function getWatchLaterItems(
+  yt: Innertube,
+  limit = WATCH_LATER_LIMIT
+): Promise<WatchLaterEntry[]> {
   console.log("Recuperation de Watch later...");
   const playlist = await yt.getPlaylist("WL");
   const items: any[] = [];
@@ -102,13 +106,13 @@ export async function getWatchLaterItems(yt: Innertube): Promise<WatchLaterEntry
     if (Array.isArray(current.videos)) {
       items.push(...current.videos);
     }
-    if (!current.has_continuation || items.length >= WATCH_LATER_LIMIT) {
+    if (!current.has_continuation || items.length >= limit) {
       break;
     }
     current = await current.getContinuation();
   }
 
-  const limited = items.slice(0, WATCH_LATER_LIMIT);
+  const limited = items.slice(0, limit);
   return limited.map((video: any) => ({
     title: video?.title?.toString?.() ?? "Sans titre",
     id: video?.id ?? video?.video_id ?? "",
@@ -118,6 +122,50 @@ export async function getWatchLaterItems(yt: Innertube): Promise<WatchLaterEntry
     thumbnail: video?.thumbnails?.[0]?.url ?? null,
     video_info: video?.video_info?.text ?? "",
   }));
+}
+
+async function getWatchLaterSetVideoIds(
+  yt: Innertube,
+  limit = WATCH_LATER_DELETE_LIMIT
+): Promise<string[]> {
+  const playlist = await yt.getPlaylist("WL");
+  const setIds: string[] = [];
+  let current = playlist;
+  while (current) {
+    if (Array.isArray(current.videos)) {
+      for (const video of current.videos as any[]) {
+        const setId =
+          (video as { set_video_id?: string; setVideoId?: string })?.set_video_id ??
+          (video as { set_video_id?: string; setVideoId?: string })?.setVideoId ??
+          null;
+        if (typeof setId === "string" && setId) setIds.push(setId);
+      }
+    }
+    if (!current.has_continuation || setIds.length >= limit) {
+      break;
+    }
+    current = await current.getContinuation();
+  }
+  return setIds.slice(0, limit);
+}
+
+export async function clearWatchLater(
+  yt: Innertube,
+  limit = WATCH_LATER_DELETE_LIMIT
+) {
+  console.log("Suppression Watch later...");
+  const setIds = await getWatchLaterSetVideoIds(yt, limit);
+  if (setIds.length === 0) {
+    console.log("Watch later vide.");
+    return;
+  }
+
+  const chunkSize = 50;
+  for (let i = 0; i < setIds.length; i += chunkSize) {
+    const chunk = setIds.slice(i, i + chunkSize);
+    await yt.playlist.removeVideos("WL", chunk, true);
+  }
+  console.log(`Watch later supprime (${setIds.length} videos).`);
 }
 
 export async function listWatchLater(yt: Innertube) {
